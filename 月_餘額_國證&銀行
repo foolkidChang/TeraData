@@ -1,1 +1,640 @@
+/*【月】1.餘額_國證&銀行 V.2021.01.21.SQL*/
 
+/*STEP 01. 清除前月暫存檔資料*/
+DELETE FROM PB_TEMP.TW_AUM_TEMP;
+
+/*STEP 02.INSERT 國證產品餘額*/
+INSERT INTO PB_TEMP.TW_AUM_TEMP
+           (CUSTOMER_ID, ACCT_NBR, TXN_DATE, PROD_TP_L, PROD_TP_M, PROD_TP_S, CUR_PROD, CUR_TXN, PROD_ID, PROD_NAME, ISIN_CODE, PRICE, UNITS,  
+            PROD_CUR_RATE, TXN_CUR_RATE, FX_AMT, NTD_AMT, FX_PV, NTD_PV, PLAT, TRUST_F, PLEDGE_F, DATA_DATE)
+
+     SELECT -------------------------------------------------------------------------------------------------------------------- SEC 債券&SN BAL
+            TRIM(A.CUSTOMER_ID) AS CUSTOMER_ID,
+            TRIM(A.ACCT_NBR) AS ACCT_NBR,
+            A.TRAN_DATE AS TXN_DATE,
+            CASE WHEN SUBSTR(A.PRODUCT_CODE,5,2) = 'SN' THEN 'SN' ELSE '債券' END AS PROD_TP_L,
+            ''                            AS PROD_TP_M,
+            ''                            AS PROD_TP_S,
+            TRIM(A.CURRENCY_CODE)         AS CUR_PROD, ---產品計價幣別
+            TRIM(A.TRAN_CURRENCY_CODE)    AS CUR_TXN,  ---交易幣別
+            TRIM(A.PRODUCT_CODE)          AS PROD_ID,
+            TRIM(A.PRODUCT_NAME)          AS PROD_NAME,
+            TRIM(A.ISIN_CODE)             AS ISIN_CODE,
+            CAST(CASE WHEN A.NET_ASSET_VALUE = 0 AND SUBSTR(A.TRAN_DATE,1,6) = '?YYYYMM' THEN
+                           CAST(FX_AMT / UNITS * 100 AS DECIMAL(15,6)) --當月交易SN價格未更新，使用成本價格(百元報價)
+                      ELSE A.NET_ASSET_VALUE
+                      END AS DECIMAL(15,6))   AS PRICE,
+            CAST(A.UNIT_NUM AS DECIMAL(15,4)) AS UNITS,
+            CAST(CASE WHEN A.CURRENCY_CODE <> A.TRAN_CURRENCY_CODE THEN A.NTD_SETTLE_AMT/FX_PV
+                      ELSE P.TFR_RATE 
+                      END AS DECIMAL(8,6))                  AS PROD_CUR_RATE, --以國證的資料為折台匯率
+            CAST(T.TFR_RATE AS DECIMAL(8,6))                AS TXN_CUR_RATE,
+            CAST(A.INVEST_COSTS_AMT AS DECIMAL(18,3))       AS FX_AMT,
+            CAST(FX_AMT * TXN_CUR_RATE AS DECIMAL(18,3))    AS NTD_AMT,
+            CAST(PRICE * UNIT_NUM/100 AS DECIMAL(18,3))     AS FX_PV,   ---報價為百元報價
+            CAST(CASE WHEN A.NET_ASSET_VALUE = 0 THEN CAST(FX_PV * PROD_CUR_RATE AS DECIMAL(18,3))
+                      ELSE NTD_SETTLE_AMT END AS DECIMAL(18,3)) NTD_PV,
+            CAST(CASE WHEN CUST_TYPE_CODE = 'D' THEN 'DSU'
+                      WHEN CUST_TYPE_CODE = 'O' THEN 'OSU'
+                      ELSE  CUST_TYPE_CODE END  AS VARCHAR(6)) PLAT,
+            '0' TRUST_F,
+            CASE WHEN A.TXN_FLAG = 'Y' THEN '1' ELSE '0' END PLEDGE_F,
+            A.DATA_DATE
+       FROM ACCT_SEC_BOND_BAL A --國證--債券餘額檔
+  LEFT JOIN -----國證交易折台匯率使用國證匯率
+           (SELECT TRAN_CURRENCY_CODE CURRENCY_CODE, AVERAGE(NTD_SETTLE_AMT/SETTLE_AMT) TFR_RATE FROM ACCT_SEC_BOND_BAL?YYYYMM GROUP BY 1 WHERE NET_ASSET_VALUE <> 0 ) T ON T.CURRENCY_CODE = A.TRAN_CURRENCY_CODE
+  LEFT JOIN -----國證產品折台匯率使用國證匯率
+           (SELECT TRAN_CURRENCY_CODE CURRENCY_CODE, AVERAGE(NTD_SETTLE_AMT/SETTLE_AMT) TFR_RATE FROM ACCT_SEC_BOND_BAL?YYYYMM GROUP BY 1 WHERE NET_ASSET_VALUE <> 0 ) P ON P.CURRENCY_CODE = A.CURRENCY_CODE
+      WHERE A.DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_BOND_BAL WHERE SUBSTR(DATA_DATE,1,6)='?YYYYMM')
+  
+  UNION ALL
+ 
+     SELECT -------------------------------------------------------------------------------------------------------------------- SEC 基金 BAL
+            TRIM(A.CUSTOMER_ID) AS CUS_ID,
+            TRIM(A.ACCT_NBR) AS ACCT_NBR,
+            A.TRAN_DATE AS TXN_DATE,
+            TRIM(CAST('基金' AS CHAR(20)))   AS PROD_TP_L,
+            TRIM(CAST('複委託' AS CHAR(20))) AS PROD_TP_M,
+            TRIM(CAST('' AS CHAR(20)))       AS PROD_TP_S,
+            TRIM(A.CURRENCY_CODE)            AS CUR_PROD, ---產品計價幣別
+            TRIM(A.TRAN_CURRENCY_CODE)       AS CUR_TXN,  ---交易幣別
+            TRIM(A.PRODUCT_CODE)             AS PROD_ID,
+            TRIM(A.PRODUCT_NAME)             AS PROD_NAME,
+            CODES.ISIN_CODE,
+            CAST(A.NET_ASSET_VALUE AS DECIMAL(15,6))       AS PRICE,
+            CAST(A.UNIT_NUM AS DECIMAL(15,4))              AS UNITS,
+            CAST(CASE WHEN A.CURRENCY_CODE <> A.TRAN_CURRENCY_CODE THEN A.NTD_SETTLE_AMT/FX_PV
+                      ELSE P.TFR_RATE END AS DECIMAL(8,6)) AS PROD_CUR_RATE, ----------以國證的資料為折台匯率
+            CAST(T.TFR_RATE AS DECIMAL(8,6))               AS TXN_CUR_RATE,
+            CAST(A.INVEST_COSTS_AMT AS DECIMAL(18,3))      AS FX_AMT,
+            CAST(FX_AMT * TXN_CUR_RATE AS DECIMAL(18,3))   AS NTD_AMT,
+            CAST(PRICE * UNIT_NUM AS DECIMAL(18,3))        AS FX_PV,
+            A.NTD_SETTLE_AMT NTD_PV,
+            CASE WHEN CUST_TYPE_CODE = 'D' THEN 'DSU'
+                 WHEN CUST_TYPE_CODE = 'O' THEN 'OSU'
+                 ELSE CUST_TYPE_CODE END PLAT,
+            '0' TRUST_F,
+            CASE WHEN A.TXN_FLAG = 'Y' THEN '1' ELSE '0' END PLEDGE_F,
+            A.DATA_DATE                  
+       FROM ACCT_SEC_FUND_BAL A --國證--基金餘額檔
+  LEFT JOIN -----國證交易折台匯率使用國證匯率
+           (SELECT TRAN_CURRENCY_CODE CURRENCY_CODE, AVERAGE(NTD_SETTLE_AMT/SETTLE_AMT) TFR_RATE FROM ACCT_SEC_FUND_BAL?YYYYMM GROUP BY 1 WHERE NET_ASSET_VALUE <> 0 ) T ON T.CURRENCY_CODE = A.TRAN_CURRENCY_CODE
+  LEFT JOIN -----國證產品折台匯率使用國證匯率
+           (SELECT TRAN_CURRENCY_CODE CURRENCY_CODE, AVERAGE(NTD_SETTLE_AMT/SETTLE_AMT) TFR_RATE FROM ACCT_SEC_FUND_BAL?YYYYMM GROUP BY 1 WHERE NET_ASSET_VALUE <> 0 ) P ON P.CURRENCY_CODE = A.CURRENCY_CODE
+  LEFT JOIN -----國證基金產品檔
+           (SELECT DISTINCT PROD_CODE, ISIN_CODE FROM DP_MCIF_REF.RD_SEC_FUND_PROD_CODES) CODES ON A.PRODUCT_CODE = CODES.PROD_CODE  
+      WHERE A.DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_FUND_BAL WHERE SUBSTR(DATA_DATE, 1, 6) = '?YYYYMM')
+
+  UNION ALL 
+ 
+     SELECT -------------------------------------------------------------------------------------------------------------------- SEC 海外股票 BAL
+            TRIM(A.CUSTOMER_ID)  AS CUSTOMER_ID,
+            TRIM(A.ACCT_NBR)     AS ACCT_NBR,
+            A.TRAN_DATE          AS TXN_DATE,
+            TRIM(CAST('股票/ETF' AS CHAR(20)))   AS PROD_TP_L,
+            TRIM(CAST(CASE WHEN A.STOCK_EXCHANGE IN ('US')       THEN '美股'   
+                           WHEN A.STOCK_EXCHANGE IN ('HK', 'HR') THEN '港股'
+                           WHEN A.STOCK_EXCHANGE IN ('JP')       THEN '日股'  
+                           WHEN A.STOCK_EXCHANGE IN ('C1', 'C2') THEN '陸股'  
+                           WHEN A.STOCK_EXCHANGE IN ('GR')       THEN '德股'    
+                           WHEN A.STOCK_EXCHANGE IN ('LN')       THEN '英股'
+                           WHEN A.STOCK_EXCHANGE IN ('SW')       THEN '瑞士股'
+                           ELSE A.STOCK_EXCHANGE END AS VARCHAR(20))) AS PROD_TP_M,
+            TRIM(CAST('' AS VARCHAR(20)))    AS PROD_TP_S,
+            A.CURRENCY_CODE                  AS CUR_PROD,
+            A.TRAN_CURRENCY_CODE             AS CUR_TXN,
+            TRIM(A.PRODUCT_CODE)             AS PROD_ID,
+            TRIM(A.PRODUCT_NAME)             AS PROD_NAME,
+            ''  ISIN_CODE,
+            CAST(A.CLOSE_PRICE AS DECIMAL(15,6))  AS PRICE,
+            CAST(A.UNIT_NUM AS DECIMAL(15,4))     AS UNITS,
+            CAST(CASE WHEN A.CURRENCY_CODE <> A.TRAN_CURRENCY_CODE THEN A.NTD_SETTLE_AMT/FX_PV
+                      ELSE P.TFR_RATE END AS DECIMAL(8,6)) AS PROD_CUR_RATE,    --國證[產品]幣別折台匯率使用國證匯率
+            CAST(T.TFR_RATE AS DECIMAL(8,6))               AS TXN_CUR_RATE,     --國證[交易]幣別折台匯率使用國證匯率
+            CAST(A.INVEST_COSTS_AMT  AS DECIMAL(18,3))     AS FX_AMT,
+            CAST(FX_AMT * TXN_CUR_RATE AS DECIMAL(18,3))   AS NTD_AMT,
+            CAST(PRICE * UNIT_NUM AS DECIMAL(18,3))        AS FX_PV,
+            CAST(A.NTD_SETTLE_AMT AS DECIMAL(18,3))        AS NTD_PV,  ---國證的台幣餘額
+            CASE WHEN CUST_TYPE_CODE = 'D' THEN 'DSU'
+                 WHEN CUST_TYPE_CODE = 'O' THEN 'OSU'
+                 ELSE CUST_TYPE_CODE END PLAT,
+            '0' TRUST_F,
+            '0' PLEDGE_F,----設質海外股票會移至保銀，自新擔保品系統撈取。
+            A.DATA_DATE
+       FROM  ---ACCT_SEC_OSA_STOCK_BAL?YYYYMM A  --月檔                
+           ( --日檔彙整
+               SELECT * FROM ACCT_SEC_OVERSEA_STOCK_BAL A  
+                WHERE FILE_TIME = '1200D' 
+                  AND TRAN_MARKET = 'USA'
+                  AND CUST_TYPE_CODE = 'O'
+                  AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_OVERSEA_STOCK_BAL WHERE FILE_TIME = '1200D' AND TRAN_MARKET = 'USA' AND CUST_TYPE_CODE = 'O' AND SUBSTR(DATA_DATE,1,6 ) = '?YYYYMM')          
+            UNION ALL
+               SELECT * FROM ACCT_SEC_OVERSEA_STOCK_BAL A  
+                WHERE FILE_TIME = '1200D' 
+                  AND TRAN_MARKET = 'USA'
+                  AND CUST_TYPE_CODE = 'D'
+                  AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_OVERSEA_STOCK_BAL WHERE FILE_TIME = '1200D' AND TRAN_MARKET = 'USA' AND CUST_TYPE_CODE = 'D' AND SUBSTR(DATA_DATE,1,6 ) = '?YYYYMM')
+            UNION ALL
+               SELECT * FROM ACCT_SEC_OVERSEA_STOCK_BAL A
+                WHERE FILE_TIME = '1200D' 
+                  AND TRAN_MARKET <> 'USA'
+                  AND CUST_TYPE_CODE = 'O'
+                  AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_OVERSEA_STOCK_BAL WHERE FILE_TIME = '1200D' AND TRAN_MARKET <> 'USA' AND CUST_TYPE_CODE = 'O' AND SUBSTR(DATA_DATE,1,6 ) = '?YYYYMM')
+            UNION ALL
+               SELECT * FROM ACCT_SEC_OVERSEA_STOCK_BAL A
+                WHERE FILE_TIME = '1200D' 
+                  AND TRAN_MARKET <> 'USA'
+                  AND CUST_TYPE_CODE = 'D'
+                  AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_OVERSEA_STOCK_BAL WHERE FILE_TIME = '1200D' AND TRAN_MARKET <> 'USA' AND CUST_TYPE_CODE = 'D' AND SUBSTR(DATA_DATE,1,6 ) = '?YYYYMM')          
+            UNION ALL
+               SELECT * FROM ACCT_SEC_OVERSEA_STOCK_BAL A
+                WHERE FILE_TIME = '1830D'
+                  AND TRAN_MARKET = 'CHN'
+                  AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_OVERSEA_STOCK_BAL WHERE FILE_TIME = '1830D' AND TRAN_MARKET = 'CHN' AND SUBSTR(DATA_DATE,1,6 ) = '?YYYYMM')
+            UNION ALL
+               SELECT * FROM ACCT_SEC_OVERSEA_STOCK_BAL A
+                WHERE FILE_TIME = '1830D' 
+                  AND TRAN_MARKET <> 'CHN'
+                  AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_OVERSEA_STOCK_BAL WHERE FILE_TIME = '1830D' AND TRAN_MARKET <> 'CHN' AND SUBSTR(DATA_DATE,1,6 ) = '?YYYYMM')
+            UNION ALL
+               SELECT * FROM ACCT_SEC_OVERSEA_STOCK_BAL A
+                WHERE FILE_TIME = '1530D' 
+                  AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_OVERSEA_STOCK_BAL WHERE FILE_TIME = '1530D' AND SUBSTR(DATA_DATE,1,6 ) = '?YYYYMM')
+            --MEMO --各市場傳檔時間：12:00 US & GR  ||  15:30  JP  ||  18:30  HK HR CI SP
+            ) A 
+  LEFT JOIN -----國證交易幣別折台匯率使用國證匯率
+           (  SELECT TRAN_CURRENCY_CODE CURRENCY_CODE, STOCK_EXCHANGE, CAST(AVERAGE(NTD_SETTLE_AMT/SETTLE_AMT) AS DECIMAL(5,2)) TFR_RATE
+                FROM ACCT_SEC_OSA_STOCK_BAL?YYYYMM
+            GROUP BY 1, 2
+               WHERE CLOSE_PRICE <> 0) T ON T.CURRENCY_CODE = A.TRAN_CURRENCY_CODE AND T.STOCK_EXCHANGE = A.STOCK_EXCHANGE
+  LEFT JOIN -----國證產品幣別折台匯率使用國證匯率
+           (  SELECT TRAN_CURRENCY_CODE CURRENCY_CODE, STOCK_EXCHANGE, CAST(AVERAGE(NTD_SETTLE_AMT/SETTLE_AMT) AS DECIMAL(5,2)) TFR_RATE
+                FROM ACCT_SEC_OSA_STOCK_BAL?YYYYMM
+            GROUP BY 1, 2
+               WHERE CLOSE_PRICE <> 0) P ON P.CURRENCY_CODE = A.CURRENCY_CODE AND P.STOCK_EXCHANGE = A.STOCK_EXCHANGE
+
+  UNION ALL
+
+     SELECT -------------------------------------------------------------------------------------------------------------------- SEC 台股(未設質、不含保管) BAL
+            TRIM(CASE WHEN A.CUSTOMER_ID = '99CAAAE8859AE23E08' AND ACCT_NBR = '8888X6C76ZD' THEN 'E1D08D9F508FE246AD'  ---資金回台信託專戶下的
+                      ELSE A.CUSTOMER_ID END ) AS CUS_ID,
+            TRIM(A.ACCT_NBR)    AS ACCT_NBR,
+            A.DATA_DATE         AS TXN_DATE, -----------台股沒有留存交易日紀錄&交易成本
+            TRIM(CAST(CASE WHEN A.STOCK_NBR IN ('B99701', 'B99602') THEN '債券'
+                           ELSE '股票/ETF' END AS VARCHAR(20))) AS PROD_TP_L,
+            TRIM(CAST(CASE WHEN A.STOCK_NBR IN ('B99701', 'B99602') THEN '次順位債'
+                           ELSE '台股' END AS VARCHAR(20)))     AS PROD_TP_M,
+            TRIM(CAST('' AS CHAR(20))) AS PROD_TP_S,
+            'TWD' CUR_PROD,
+            'TWD' CUR_TXN,
+            TRIM(A.STOCK_NBR)  AS PROD_ID,
+            TRIM(A.STOCK_NAME) AS PROD_NAME,
+            '' ISIN_CODE,
+            CASE WHEN PROD_ID IN ('B99701', 'B99602') THEN 1 ----次順位債長官決議以面額計價
+                 WHEN PROD_ID IN ('5346', '2479', 'YY0070', '2333', '1262') THEN 0 ---力晶.和立.尖美.碧  悠已下市
+                 ELSE CAST(A.CLOSE_PRICE AS DECIMAL(15, 6)) END PRICE,
+            CAST(A.STOCK_SHARES AS DECIMAL(15,4)) AS UNITS,
+            CAST('1' AS DECIMAL(8, 6)) PROD_CUR_RATE,
+            CAST('1' AS DECIMAL(8, 6)) TXN_CUR_RATE,
+            --CAST(A.CLOSE_PRICE * A.STOCK_SHARES AS DECIMAL(18,3)) AS FX_AMT,
+            CASE WHEN A.STOCK_NBR IN ('B99701', 'B99602') THEN A.STOCK_SHARES
+                 ELSE A.SETTLE_AMT END AS FX_AMT,
+            CASE WHEN A.STOCK_NBR IN ('B99701', 'B99602') THEN A.STOCK_SHARES
+                 ELSE A.SETTLE_AMT END AS NTD_AMT,
+            CASE WHEN A.STOCK_NBR IN ('B99701', 'B99602') THEN A.STOCK_SHARES
+                 WHEN PRICE = 0 THEN 0
+                 ELSE A.SETTLE_AMT END AS FX_PV,
+            CASE WHEN A.STOCK_NBR IN ('B99701', 'B99602') THEN A.STOCK_SHARES
+                 WHEN PRICE = 0 THEN 0 
+                 ELSE A.SETTLE_AMT END AS NTD_PV,
+            'DSU' PLAT,   --國證台股平台別統一為DSU
+            CASE WHEN CUSTOMER_ID IN ('42A15B6D405B0E98D9', '72E481A577663B707D', '99CAAAE8859AE23E08') THEN '2'
+                 ELSE '0' END TRUST_F,
+            '0' PLEDGE_F, --設質海外股票會移至保銀，自新擔保品系統撈取。
+            A.DATA_DATE
+       FROM ACCT_SEC_TW_STOCK_BAL A
+      WHERE A.CUSTOMER_ID NOT IN (SELECT DISTINCT CUSTOMER_ID FROM PB_TEMP.CUS_BASE WHERE SYS NOT IN ('WMS','HK','TRUST') )  --排除國證的保管帳戶
+        AND A.CUSTOMER_ID NOT IN ('42DCBC028F3C827616', '42C7E41E1BECA26B8F', 'F33FCCB289569440A8' ) --保管客戶無法轉碼，待確認 /*已關戶*/--保管客戶(WMS有建檔的)
+        AND DATA_DATE = (SELECT MAX(DATA_DATE) FROM ACCT_SEC_TW_STOCK_BAL WHERE SUBSTR(DATA_DATE,1,6)='?YYYYMM')  
+;
+
+
+/* STEP 03.INSERT 銀行_特金信託平台產品餘額 */
+INSERT INTO PB_TEMP.TW_AUM_TEMP 
+           (CUSTOMER_ID, ACCT_NBR, TXN_DATE, PROD_TP_L, PROD_TP_M, PROD_TP_S, CUR_PROD, CUR_TXN, PROD_ID, PROD_NAME, ISIN_CODE, PRICE, UNITS,
+            PROD_CUR_RATE, TXN_CUR_RATE, FX_AMT, NTD_AMT, FX_PV, NTD_PV, PLAT, TRUST_F, PLEDGE_F, DATA_DATE)
+
+     SELECT -------------------------------------------------------------------------------------------------------------------- BANK 特金平台 基金 BAL
+            CASE WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' THEN TRT.CUSTOMER_ID
+                 /*
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='004A36B80DF240CE6F9' THEN 'H177B4F436BFC6BCB9'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='004988BE5B8D76869F5' THEN 'H177B4F436BFC6BCB9'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='0046B5FE63E515B8CF8' THEN 'H177B4F436BFC6BCB9'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='0048A4EE38B7A78CEEA' THEN 'E1D08D9F508FE246AD'  ----客戶開立個人信託 
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='004E72506D3C68E609E' THEN 'E1D08D9F508FE246AD'  ----客戶開立個人信託 
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='00406F70B8170DAF12C' THEN 'E1D08D9F508FE246AD'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='8993284109DD912DE831USD' THEN 'H26A04FF4E5D0BA51F'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='8995D17A95DEF72948D2USD' THEN 'B1FFB596A70E89BB41'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='899E4AA25D0B40E50AF1USD' THEN 'B14BEA5C7A28AA6601'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='004C8A9239D819FE557' THEN 'E1D08D9F508FE246AD'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='004C7F0780F4A3410D5' THEN 'E1D08D9F508FE246AD'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='00439B4EA1C23C988FE' THEN 'E1D08D9F508FE246AD'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='004093E7B60AADCFE95' THEN 'H177B4F436BFC6BCB9'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='004A554DF892E7B82D6' THEN 'B14BEA5C7A28AA6601'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='0044412EA7D07169DAA' THEN 'B1FFB596A70E89BB41'  ----客戶開立個人信託
+                 WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' AND MF.ACCT_NBR='00419EA5142464534E9' THEN 'H26A04FF4E5D0BA51F'  ----客戶開立個人信託
+                 */
+                 ELSE TRIM(MF.CUSTOMER_ID) END CUSTOMER_ID,
+            TRIM(MF.ACCT_NBR)      AS  ACCT_NBR,
+            MF.ACCT_OPEN_DATE      AS  TXN_DATE,
+            TRIM(CAST('基金' AS CHAR(20))) AS PROD_TP_L,
+            TRIM(CAST('特金信託' AS CHAR(20))) AS PROD_TP_M,
+            TRIM(CAST(CASE WHEN MF.DRV_FUND_TYPE_2_CODE IN ('11', '21') THEN '股票型'
+                           WHEN MF.DRV_FUND_TYPE_2_CODE IN ('12', '22') THEN '債券型'              
+                           WHEN MF.DRV_FUND_TYPE_2_CODE IN ('13', '23') THEN '平衡型'
+                           WHEN MF.DRV_FUND_TYPE_2_CODE IN ('14', '24') THEN '貨幣型'
+                           ELSE '其他' END AS CHAR(20)))  AS PROD_TP_S,
+            B.CURRENCY_CODE  AS CUR_PROD,
+            MF.CURRENCY_CODE AS CUR_TXN,
+            TRIM(MF.FUND_ID) AS PROD_ID,
+            TRIM(B.PRODUCT_NAME) PROD_NAME,
+            TRIM(B.ISIN_CODE) ISIN_CODE,
+            CASE WHEN RT.COUNT_UNIT = 0 THEN 0
+                 ELSE CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18,7)) / CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(15,6)) / CAST(RT.COUNT_UNIT AS DECIMAL(15,6))
+                 END PRICE,
+            CAST(RT.COUNT_UNIT AS DECIMAL(15,4))      AS UNITS,
+            CAST(E2.TFR_RATE AS DECIMAL(10,6))        AS PROD_CUR_RATE,
+            CAST(E.TFR_RATE AS DECIMAL(10,6))         AS TXN_CUR_RATE,
+            CAST(MF.FX_CURRENT_BAL AS DECIMAL(18,3))  AS FX_AMT,  --交易原幣信託金額
+            CAST(MF.NTD_CURRENT_BAL AS DECIMAL(18,3)) AS NTD_AMT, --台幣信託金額
+            CASE WHEN MF.FUND_ID IN ('00900001', '00900002') AND SUBSTR(MF.ACCT_OPEN_DATE, 1, 4)||SUBSTR(MF.ACCT_OPEN_DATE, 6, 2)='?YYYYMM' AND RT.COUNT_UNIT = 0 THEN CAST(MF.FX_CURRENT_BAL AS DECIMAL(18, 3)) ---B BREITS 一個月分配一次，未分配者以投資金額計。
+                 ELSE CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18, 7)) / CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(18, 3))
+                 END FX_PV, ---台幣折回原幣
+            CASE WHEN MF.FUND_ID IN ('00900001', '00900002') AND SUBSTR(MF.ACCT_OPEN_DATE, 1, 4)||SUBSTR(MF.ACCT_OPEN_DATE, 6, 2)='?YYYYMM' AND RT.COUNT_UNIT = 0 THEN CAST(MF.NTD_CURRENT_BAL AS DECIMAL(18, 3))---B BREITS 一個月分配一次，未分配者以投資金額計。
+                 ELSE CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18,3)) 
+                 END NTD_PV, --基金參考現值，用該欄資料才會與月底結帳金額相同    
+            TRIM(CAST(CASE WHEN C.CUSTOMER_TYPE_CODE IN ( '11', '14', '21', '24') THEN 'DBU'
+                           ELSE 'OBU' END AS CHAR(3))) PLAT, --依客戶所屬ID區分平台
+            CASE WHEN MF.CUSTOMER_ID = '99CAAAE8859AE23E08' THEN '2'
+                 ELSE '0' END TRUST_F,
+            '0' PLEDGE_F,
+            MF.SNAPSHOT_YR_MTH DATA_DATE
+       FROM ACCT_DRV_MF?YYYYMM MF -------基金主檔，有月檔，月底時換日期
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN 
+           (
+            SELECT FUND_ID, FUND_CHINESE_NAME AS PRODUCT_NAME, FUND_ENG_NAME AS PROD_ENG_NAME, ISIN_CODE, CURRENCY_CODE 
+              FROM DP_MCIF_REF.RD_FUND_CODES
+             WHERE FUND_SOURCE_CODE = 'CTF' --境外
+             UNION 
+            SELECT FUND_ID, FUND_CHINESE_NAME AS PRODUCT_NAME, FUND_ENG_NAME AS PROD_ENG_NAME, ISINCODE AS ISIN_CODE, CASE WHEN CURRENCY_CODE = 'NTD' THEN 'TWD' ELSE CURRENCY_CODE END CURRENCY_CODE
+              FROM RD_FUND_CTFL_CODES       --境內
+           ) B ON MF.FUND_ID = B.FUND_ID
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN PB_TEMP.TRUST_ACCT_MAPPING TRT ON MF.ACCT_NBR = TRT.ACCT_NBR   --串開立個人信託(如有新增請INSERT)
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN ACCT_DRV_FUND_RETURN?YYYYMM  RT ON MF.ACCT_NBR = RT.ACCT_NBR   --基金報酬率資料檔
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD') E  ON MF.CURRENCY_CODE = TRIM(E.CURRENCY_CODE) --串.交易幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD') E2 ON B.CURRENCY_CODE = TRIM(E2.CURRENCY_CODE) --串.產品幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN PARTY_BKC_MG_CIF C ON MF.CUSTOMER_ID = C.CUSTOMER_ID  --CIF 基本資料檔 判斷客戶為OBU或DBU
+  ------------------------------------------------------------------------------------------------------------------------------------
+      WHERE MF.ACCT_BRANCH_CODE = '899'   
+        AND MF.ACCT_STATUS_CODE IN 'A'
+      --AND MF.DRV_FUND_TYPE_2_CODE NOT IN ('25'/*ETF、海外股票、特別股*/, '31' /*連動債*/,'32'/*債券*/)
+        AND MF.DRV_FUND_TYPE_1_CODE='1' /* 1:國內外基金， 2:權益證卷(EQUITIES)， 3:結構型商品(SN)， 4:有價證券(BOND) */
+        AND MF.CUSTOMER_ID NOT IN (SELECT DISTINCT TRIM(CUSTOMER_ID) FROM PARTY_WMS_PB_CLIENT WHERE ACCT_CLOSE_DATE IS NOT NULL ) --排除WMS已關戶客戶    
+  
+  UNION ALL 
+     SELECT -------------------------------------------------------------------------------------------------------------------- BANK 特金平台 債券 BAL
+            TRIM(BND.CUSTOMER_ID)     AS CUSTOMER_ID,
+            TRIM(BND.TRUST_ACCT_NBR)  AS ACCT_NBR,
+            MF.ACCT_OPEN_DATE         AS TXN_DATE,
+            TRIM(CAST('債券' AS CHAR(20)))      AS PROD_TP_L,
+            TRIM(CAST('特金信託' AS CHAR(20)))  AS PROD_TP_M,
+            '' PROD_TP_S,
+            TRIM(C.CURRENCY_CODE)               AS CUR_PROD,
+            TRIM(MF.CURRENCY_CODE)              AS CUR_TXN,
+            TRIM(BND.BOND_CODE)                 AS PROD_ID,
+            TRIM(C.BOND_CHI_FULL_NAME)          AS PROD_NAME,
+            TRIM(C.ISIN_CODE)                   AS ISIN_CODE,
+            CASE WHEN RT.COUNT_UNIT = 0 THEN 0
+                 ELSE CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18, 7)) / CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(15, 6)) / CAST(RT.COUNT_UNIT AS DECIMAL(15, 6))
+                 END PRICE,
+            CAST(RT.COUNT_UNIT * 100 AS DECIMAL(18,2)) AS UNITS,
+            CAST(E2.TFR_RATE AS DECIMAL(8,6))          AS PROD_CUR_RATE,
+            CAST(E.TFR_RATE AS DECIMAL(8,6))           AS TXN_CUR_RATE,
+            MF.FX_CURRENT_BAL                          AS FX_AMT,
+            MF.NTD_CURRENT_BAL                         AS NTD_AMT,
+            CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18, 7)) / CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(18, 3)) AS FX_PV, ---台幣折回原幣
+            MF.FUND_PRESENT_VALUE_AMT                  AS NTD_PV,
+            CASE WHEN BND.DBU_OBU_TXN_IND = 'O' THEN 'OBU'
+                 WHEN BND.DBU_OBU_TXN_IND = 'D' THEN 'DBU' END PLAT,
+            CASE WHEN BND.CUSTOMER_ID = '99CAAAE8859AE23E08' THEN '2'
+                 ELSE '0' END TRUST_F,
+            '0' PLEDGE_F,
+            BND.SNAPSHOT_DATE                          AS DATA_DATE
+       FROM ACCT_BND_FUND?YYYYMM BND
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN DP_MCIF_REF.RD_BND_CODES C ON BND.BOND_CODE = C.BOND_CODE  ----債券相關資料
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN -------基金平台所有資料檔，有折台現值
+           (SELECT * FROM ACCT_DRV_MF?YYYYMM WHERE DRV_FUND_TYPE_1_CODE = '4' AND ACCT_BRANCH_CODE = '899') MF ON BND.TRUST_ACCT_NBR = MF.ACCT_NBR
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN ACCT_DRV_FUND_RETURN?YYYYMM RT ON BND.TRUST_ACCT_NBR = RT.ACCT_NBR -----P&L相關資料，原幣現值、單位數等資訊
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD')  E  ON MF.CURRENCY_CODE = TRIM(E.CURRENCY_CODE) ---串.交易幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD' ) E2 ON C.CURRENCY_CODE = TRIM(E2.CURRENCY_CODE) ---串.產品幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+      WHERE BND.BRANCH_CODE = '0899'
+        AND MF.ACCT_STATUS_CODE IN 'A'   
+        AND BND.CUSTOMER_ID IN (SELECT DISTINCT TRIM(CUSTOMER_ID) FROM PARTY_WMS_PB_CLIENT WHERE ACCT_CLOSE_DATE IS NULL) --只抓私銀WMS目前有效客戶
+
+  UNION ALL 
+     SELECT -------------------------------------------------------------------------------------------------------------------- BANK 特金平台 ETF BAL
+            TRIM(BND.CUSTOMER_ID)     AS CUSTOMER_ID,
+            TRIM(BND.TRUST_ACCT_NBR)  AS ACCT_NBR,
+            MF.ACCT_OPEN_DATE         AS TXN_DATE,
+            TRIM(CAST('債券' AS CHAR(20)))      AS PROD_TP_L,
+            TRIM(CAST('特金信託' AS CHAR(20)))  AS PROD_TP_M,
+            '' PROD_TP_S,
+            TRIM(C.CURRENCY_CODE)               AS CUR_PROD,
+            TRIM(MF.CURRENCY_CODE)              AS CUR_TXN,
+            TRIM(BND.BOND_CODE)                 AS PROD_ID,
+            TRIM(C.BOND_CHI_FULL_NAME)          AS PROD_NAME,
+            TRIM(C.ISIN_CODE)                   AS ISIN_CODE,
+            CASE WHEN RT.COUNT_UNIT = 0 THEN 0 
+                 ELSE CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18, 7)) / CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(15, 6)) / CAST(RT.COUNT_UNIT AS DECIMAL(15,6))
+                 END PRICE,
+            CAST(RT.COUNT_UNIT * 100 AS DECIMAL(18, 2)) AS UNITS,
+            CAST(E2.TFR_RATE AS DECIMAL(8,6))           AS PROD_CUR_RATE,
+            CAST(E.TFR_RATE AS DECIMAL(8,6))            AS TXN_CUR_RATE,
+            MF.FX_CURRENT_BAL                           AS FX_AMT,
+            MF.NTD_CURRENT_BAL                          AS NTD_AMT,
+            CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18, 7)) / CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(18, 3)) AS FX_PV, ---台幣折回原幣
+            MF.FUND_PRESENT_VALUE_AMT                   AS NTD_PV,
+            CASE WHEN BND.DBU_OBU_TXN_IND = 'O' THEN 'OBU'
+                 WHEN BND.DBU_OBU_TXN_IND = 'D' THEN 'DBU' END PLAT,
+            CASE WHEN BND.CUSTOMER_ID = '99CAAAE8859AE23E08' THEN '2' ELSE '0' END TRUST_F,
+            '0' PLEDGE_F,
+            BND.SNAPSHOT_DATE                           AS DATA_DATE
+       FROM ACCT_BND_FUND?YYYYMM BND  
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN DP_MCIF_REF.RD_BND_CODES C ON BND.BOND_CODE = C.BOND_CODE  ----債券相關資料
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN -------------國泰世華商業銀行香港分行發行美元６個月之匯率連，有折台現值
+           (SELECT * FROM ACCT_DRV_MF?YYYYMM WHERE DRV_FUND_TYPE_1_CODE = '3' AND ACCT_BRANCH_CODE = '899') MF ON BND.TRUST_ACCT_NBR = MF.ACCT_NBR
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN ACCT_DRV_FUND_RETURN?YYYYMM RT ON BND.TRUST_ACCT_NBR = RT.ACCT_NBR  -----P&L相關資料，原幣現值、單位數等資訊
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD') E  ON MF.CURRENCY_CODE = TRIM(E.CURRENCY_CODE) ---串.交易幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD') E2 ON C.CURRENCY_CODE = TRIM(E2.CURRENCY_CODE) ---串.產品幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+      WHERE BND.BRANCH_CODE = '0899'
+        AND MF.ACCT_STATUS_CODE IN 'A'   
+        AND BND.CUSTOMER_ID IN (SELECT DISTINCT TRIM(CUSTOMER_ID) FROM PARTY_WMS_PB_CLIENT WHERE ACCT_CLOSE_DATE IS NULL) --只抓私銀WMS目前有效客戶    
+
+  UNION ALL 
+     SELECT ---------BANK 特金平台 ETF BAL
+            TRIM(BND.CUSTOMER_ID)     AS CUSTOMER_ID,
+            TRIM(BND.TRUST_ACCT_NBR)  AS ACCT_NBR,
+            MF.ACCT_OPEN_DATE         AS TXN_DATE,
+            TRIM(CAST('股票/ETF' AS CHAR(20)))  AS PROD_TP_L,
+            TRIM(CAST('特金信託' AS CHAR(20)))  AS PROD_TP_M,
+            CASE WHEN C.COUNTRY_CODE = 'US' THEN '美股'
+                 WHEN C.COUNTRY_CODE = 'JP' THEN '日股' END PROD_TP_S, ---後續慢慢加入國別判斷
+            TRIM(C.CURRENCY_CODE)               AS CUR_PROD,
+            TRIM(MF.CURRENCY_CODE)              AS CUR_TXN,
+            TRIM(BND.BOND_CODE)                 AS PROD_ID,
+            TRIM(C.BOND_CHI_FULL_NAME)          AS PROD_NAME,
+            TRIM(C.ISIN_CODE)                   AS ISIN_CODE,
+            CASE WHEN RT.COUNT_UNIT = 0 THEN 0 
+                 ELSE CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18, 7)) / CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(15, 6)) / CAST( RT.COUNT_UNIT AS DECIMAL(15, 6))
+                 END PRICE,
+            CAST(RT.COUNT_UNIT*100 AS DECIMAL(18,2))   AS UNITS,
+            CAST(E2.TFR_RATE AS DECIMAL(8,6))          AS PROD_CUR_RATE,
+            CAST(E.TFR_RATE AS DECIMAL(8,6))           AS TXN_CUR_RATE,
+            MF.FX_CURRENT_BAL                          AS FX_AMT,
+            MF.NTD_CURRENT_BAL                         AS NTD_AMT,
+            CAST(CAST(MF.FUND_PRESENT_VALUE_AMT AS DECIMAL(18, 7))/ CAST(E2.TFR_RATE AS DECIMAL(18, 7)) AS DECIMAL(18, 3)) AS FX_PV, ---台幣折回原幣
+            MF.FUND_PRESENT_VALUE_AMT                  AS NTD_PV,
+            CASE WHEN BND.DBU_OBU_TXN_IND = 'O' THEN 'OBU'
+                 WHEN BND.DBU_OBU_TXN_IND = 'D' THEN 'DBU' END PLAT,
+            CASE WHEN BND.CUSTOMER_ID = '99CAAAE8859AE23E08' THEN '2' ELSE '0' END TRUST_F,
+            '0' PLEDGE_F,
+            BND.SNAPSHOT_DATE                          AS DATA_DATE
+       FROM ACCT_BND_FUND?YYYYMM BND
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN DP_MCIF_REF.RD_BND_CODES C ON BND.BOND_CODE = C.BOND_CODE  ----債券相關資料
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN -------特金平台所有資料檔，有折台現值
+           (SELECT * FROM ACCT_DRV_MF?YYYYMM WHERE DRV_FUND_TYPE_1_CODE = '2' AND ACCT_BRANCH_CODE = '899' ) MF ON BND.TRUST_ACCT_NBR=MF.ACCT_NBR
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN ACCT_DRV_FUND_RETURN?YYYYMM RT ON BND.TRUST_ACCT_NBR = RT.ACCT_NBR  -----P&L相關資料，原幣現值、單位數等資訊
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD') E  ON MF.CURRENCY_CODE = TRIM(E.CURRENCY_CODE) ---串.交易幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN(SELECT * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD') E2 ON C.CURRENCY_CODE = TRIM(E2.CURRENCY_CODE) ---串.產品幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+      WHERE BND.BRANCH_CODE = '0899'
+        AND MF.ACCT_STATUS_CODE IN 'A'   
+        AND BND.CUSTOMER_ID IN (SELECT DISTINCT TRIM(CUSTOMER_ID) FROM PARTY_WMS_PB_CLIENT WHERE ACCT_CLOSE_DATE IS NULL) --只抓私銀WMS目前有效客戶    
+;
+
+
+/*STEP 04.INSERT 銀行產品餘額*/
+INSERT INTO  PB_TEMP.TW_AUM_TEMP ------------------------------------------INSERT 銀行餘額
+(CUSTOMER_ID, ACCT_NBR, TXN_DATE, PROD_TP_L, PROD_TP_M,  PROD_TP_S,  CUR_PROD,  CUR_TXN,  PROD_ID    , PROD_NAME,  ISIN_CODE,  PRICE,  UNITS  
+, PROD_CUR_RATE    , TXN_CUR_RATE,  FX_AMT,  NTD_AMT,  FX_PV,  NTD_PV,  PLAT,  TRUST_F, PLEDGE_F, DATA_DATE)
+
+SEL    ----SI
+    TRIM(A.CUSTOMER_ID)    AS CUSTOMER_ID
+   ,TRIM(A.STD_ACCT_NBR)  AS ACCT_NBR    
+   ,A.TXN_DATE            AS TXN_DATE
+   ,TRIM(CAST('SI' AS CHAR(20)))  AS PROD_TP_L
+   ,TRIM(CAST(CASE WHEN RD.PRODUCT_TYPE IN ('DCD1') THEN 'DCI' ELSE 'SD' END AS CHAR(20)))   AS PROD_TP_M
+   ,TRIM(CAST('' AS CHAR(20)))  AS PROD_TP_S
+   ,TRIM(RD.CCY_CODE)      AS CUR_PROD 
+   ,TRIM(A.CURRENCY_CODE)  AS CUR_TXN 
+   ,TRIM(A.PRODUCT_ID)     AS PROD_ID  
+   ,TRIM(A.PRODUCT_NAME)   AS PROD_NAME 
+   , '' ISIN_CODE 
+   ,CAST('' AS DECIMAL(15,6))         AS PRICE 
+   ,CAST('' AS DECIMAL(15,4))         AS UNITS    
+   ,CAST(E2.TFR_RATE AS DECIMAL(8,6)) AS PROD_CUR_RATE
+   ,CAST(A.TXN_AMT/A.FX_CURRENT_BAL AS DECIMAL(8,6))  AS TXN_CUR_RATE -----交易當下匯率
+   ,CAST(A.FX_CURRENT_BAL  AS DECIMAL(18,3) )   AS FX_AMT  --交易金額--原幣
+   ,CAST(A.TXN_AMT  AS DECIMAL(18,3) )          AS NTD_AMT --交易金額--折台 (按交易當下匯率)
+   ,CAST(A.FX_CURRENT_BAL AS DECIMAL(18,3) )    AS FX_PV   --交易金額--原幣
+   ,CAST(A.FX_CURRENT_BAL * CAST(E.TFR_RATE AS DECIMAL(10,7))  AS  DECIMAL(18,3))  AS NTD_PV  --交易金額--折台 (以前一日關帳匯率計算)    
+   ,TRIM(CAST( CASE WHEN  MG.CUSTOMER_TYPE_CODE IN ( '11',  '14'  , '21',  '24') THEN 'DBU' ELSE 'OBU' END     AS CHAR(3) ) ) PLAT --依客戶所屬ID區分平台
+   ,'0' TRUST_F
+   ,'0' PLEDGE_F  
+   ,A.SNAPSHOT_DATE  DATA_DATE    
+   
+FROM  EVENT_STRUCTURE_DEP_APPL?YYYYMM  A   --月檔
+------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN PARTY_DRV C  ON A.CUSTOMER_ID=C.CUSTOMER_ID
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN DP_MCIF_REF.RD_STDC_PRODUCT_CODES RD  ON  A.PRODUCT_ID=RD.PRODUCT_CODE
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN  (SEL * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD' )E   ON A.CURRENCY_CODE=TRIM(E.CURRENCY_CODE)  ---串.交易幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN  (SEL * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE = 'TWD' )E2  ON RD.CCY_CODE=TRIM(E2.CURRENCY_CODE) ---串.產品幣別的匯率
+  ------------------------------------------------------------------------------------------------------------------------------------ 
+  LEFT JOIN PARTY_BKC_MG_CIF  MG  ON  A.CUSTOMER_ID = MG.CUSTOMER_ID  --CIF 基本資料檔 判斷客戶為OBU或DBU
+  
+------------------------------------------------------------------------------------------------------------------------------------ 
+WHERE A.ACCT_STATUS_CODE IN '00' /*00:正常，01:銷戶*/
+  AND A.SERVICE_USER_BRANCH_CODE = '899' --2018.10.23 調整為以該代碼判斷為PB 之SI
+  AND A.CUSTOMER_ID  IN ( SEL DISTINCT TRIM(CUSTOMER_ID) FROM PARTY_WMS_PB_CLIENT WHERE ACCT_CLOSE_DATE IS NULL ) --只計算 PB WMS 有效戶 (未關戶)
+--AND CANVASSER_ID IN   (SEL RM_CODE FROM PB_TEMP.PBRM)  
+
+  UNION ALL 
+
+     SELECT    ----存款
+            CASE WHEN DP.CUSTOMER_ID='99CAAAE8859AE23E08' THEN TRT.CUSTOMER_ID
+                 /*
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '0000899513667C23378C21E5') THEN 'F2FFCD950AB7A748CD' 
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '89925E0EBF738CB8F485USD' ) THEN 'H177B4F436BFC6BCB9'
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '00008995CD2D96FF2FC20D42') THEN 'E1D08D9F508FE246AD'               
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '0000899F4AADA8A962369946') THEN '899'                ----不動產信託價金專戶
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '8993284109DD912DE831USD')  THEN 'H26A04FF4E5D0BA51F'
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '8995D17A95DEF72948D2USD')  THEN 'B1FFB596A70E89BB41'
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '899E4AA25D0B40E50AF1USD')  THEN 'B14BEA5C7A28AA6601'
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '0000899AB6BDD0E69093AE33') THEN 'D20205935C5C3E4FF2' --已關戶
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '0000899DAF3C7E9288E98B77') THEN '89211E76D078E4E0F9' --已關戶
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '000089909CEB2842104DF1B1') THEN '23F7D55DFC013EBCE0' --已關戶
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '0000899656BCEC120F02B0C6') THEN 'ACE8D4A19C3ED97620' --已關戶
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '000089962BEEEC404B5286B9') THEN '12D7EE8233FA8454B3' --已關戶
+                 WHEN (DP.CUSTOMER_ID ='99CAAAE8859AE23E08' AND DP.ACCT_NBR = '0000899A21754337FB2E0FF0') THEN '50B7F16FBB4BBA0070' --已關戶         
+                 */
+                 ELSE TRIM(DP.CUSTOMER_ID)
+                 END AS CUSTOMER_ID,
+            TRIM(DP.ACCT_NBR)   AS ACCT_NBR,
+            DP.ACCT_OPEN_DATE   AS ACCT_OPEN_DATE,
+            CAST('存款' AS CHAR(20)) AS PROD_TP_L,
+            CAST(CASE WHEN DP.SOURCE_SYSTEM_CODE IN 'PB'   THEN '台幣活存'    
+                      WHEN DP.SOURCE_SYSTEM_CODE IN 'TD'   THEN '台幣定存'
+                      WHEN DP.SOURCE_SYSTEM_CODE IN 'PBFX' THEN '外幣活存'                   
+                      WHEN DP.SOURCE_SYSTEM_CODE IN 'TDFX' THEN '外幣定存'
+                      ELSE '其他' END AS CHAR(20)) AS PROD_TP_M,
+            TRIM(CAST(CASE WHEN DP.SOURCE_SYSTEM_CODE IN ('PBFX','TDFX') THEN ''
+                           ELSE P.ACCNT_CODE_DESC END AS VARCHAR(50))) AS PROD_TP_S,
+            TRIM(DP.CURRENCY_CODE)   AS CUR_PROD,
+            TRIM(DP.CURRENCY_CODE)   AS CUR_TXN,   
+            TRIM(DP.PRODUCT_ID)      AS PROD_ID,
+            TRIM(CASE WHEN ACCT_TYPE_CODE IN ('07','08') THEN '外幣活存'
+                      WHEN ACCT_TYPE_CODE IN ('63')      THEN '外幣綜合定存'
+                      WHEN ACCT_TYPE_CODE IN ('22')      THEN '外幣臨櫃一般定存'
+                      WHEN ACCT_TYPE_CODE IN ('23')      THEN '外幣電子存單'
+                      ELSE P.PRODUCT_DESC END ) AS PROD_NAME,
+            '' ISIN_CODE ,
+            CAST('' AS DECIMAL(15,6)) PRICE,
+            CAST('' AS DECIMAL(15,4)) UNITS, 
+            CAST(CAST(DP.NTD_CURRENT_BAL AS DECIMAL(18,7)) / CAST (FX_CURRENT_BAL  AS DECIMAL(18,7))  AS DECIMAL(10,6)) AS PROD_CUR_RATE,
+            CAST(CAST(DP.NTD_CURRENT_BAL AS DECIMAL(18,7)) / CAST (FX_CURRENT_BAL  AS DECIMAL(18,7))  AS DECIMAL(10,6)) AS TXN_CUR_RATE,
+            DP.FX_CURRENT_BAL    AS FX_AMT,
+            DP.NTD_CURRENT_BAL   AS NTD_AMT,
+            DP.FX_CURRENT_BAL    AS FX_PV,
+            DP.NTD_CURRENT_BAL   AS NTD_PV,
+            CASE WHEN DP.ACCT_BRANCH_CODE ='0033' THEN 'OBU'
+                 ELSE 'DBU' END PLAT, --依開戶分行區分平台
+            --TRIM(CAST( CASE WHEN  C.CUSTOMER_TYPE_CODE IN ( '11',  '14'  , '21',  '24') THEN 'DBU' ELSE 'OBU' END     AS CHAR(3) ) ) PLAT, --依客戶所屬ID區分平台
+            CASE WHEN DP.CUSTOMER_ID = '99CAAAE8859AE23E08' THEN '2' ELSE '0' END TRUST_F,
+            '0' PLEDGE_F,
+            DP.SNAPSHOT_DATE DATA_DATE
+       FROM ACCT_DRV_DP?YYYYMM    DP    --------- 存款主檔；有月檔，月初時換日期
+  ------------------------------------------------------------------------------------------------------------------------------------  
+  LEFT JOIN PB_TEMP.TRUST_ACCT_MAPPING TRT ON DP.ACCT_NBR = TRT.ACCT_NBR  --串開立個人信託(如有新增再INSERT)
+  ------------------------------------------------------------------------------------------------------------------------------------  
+  LEFT JOIN DP_MCIF_REF.RD_BKD_PRODUCT_CODES P ON DP.PRODUCT_ID = P.PRODUCT_TYPE_CODE||P.PRODUCT_SUB_CODE  
+  ------------------------------------------------------------------------------------------------------------------------------------
+  LEFT JOIN PARTY_BKC_MG_CIF C ON DP.CUSTOMER_ID = C.CUSTOMER_ID
+  ------------------------------------------------------------------------------------------------------------------------------------
+      WHERE DP.SOURCE_SYSTEM_CODE NOT IN 'STD'---排除SI 單處理存款
+        AND DP.DRV_BUSINESS_LINE_CODE IN '80600'
+        AND DP.ACCT_CLOSE_DATE IS NULL
+        AND DP.FX_CURRENT_BAL <> 0
+      --AND(ACCT_CLOSE_DATE IS NULL OR (SUBSTR(ACCT_CLOSE_DATE, 1, 4)||SUBSTR(ACCT_CLOSE_DATE, 6, 2) = '?YYYYMM' AND DP.FX_CURRENT_BAL <> 0))   --按月調整月份
+      --AND DP.NTD_CURRENT_BAL <> 0
+      --AND ACCT_BRANCH_CODE IN ('899', '833')
+;
+
+/*STEP 05.INSERT 保管客戶台股餘額*/
+INSERT INTO  PB_TEMP.TW_AUM_TEMP ------ 信託保管客戶，未設質的台股餘額  2018.10.03
+(CUSTOMER_ID, ACCT_NBR, TXN_DATE, PROD_TP_L, PROD_TP_M , PROD_TP_S , CUR_PROD , CUR_TXN , PROD_ID    , PROD_NAME , ISIN_CODE , PRICE , UNITS  
+, PROD_CUR_RATE    , TXN_CUR_RATE , FX_AMT , NTD_AMT , FX_PV , NTD_PV , PLAT,  TRUST_F, PLEDGE_F, DATA_DATE)
+
+SEL------ 信託保管客戶，未設質的台股餘額  2018.10.03
+    TRIM(CUSTOMER_ID) AS  CUSTOMER_ID                
+   ,TRIM(ACT_CODE)    AS  ACCT_NBR  
+   ,REPORT_DATE       AS DATA_DATE 
+   ,TRIM(CAST( '股票/ETF'  AS CHAR(20)))  AS PROD_TP_L  
+   ,TRIM(CAST( '台股'  AS CHAR(20)))      AS PROD_TP_M  
+   ,TRIM(CAST( ''  AS CHAR(20)))          AS PROD_TP_S
+   ,'TWD'                                 AS CUR_PROD 
+   ,'TWD'                                 AS CUR_TXN 
+   ,TRIM(STOCK_CODE)                      AS PROD_ID  
+   ,TRIM(STOCK_NAME)                      AS PROD_NAME  
+   ,'' ISIN_CODE
+   ,CAST(STOCK_PRICE_AMT AS DECIMAL(15,6))  AS PRICE
+   ,CAST(CUSTODY_UNITS AS  DECIMAL(15,4) )  AS UNITS  
+   ,CAST('1' AS DECIMAL(10,6) )             AS PROD_CUR_RATE
+   ,CAST('1' AS DECIMAL(10,6) )             AS TXN_CUR_RATE
+   ,CAST(CUSTODY_UNITS * UNIT_COST_AMT AS DECIMAL(18,3))       AS FX_AMT  
+   ,CAST(CUSTODY_UNITS * UNIT_COST_AMT AS DECIMAL(18,3))       AS NTD_AMT  
+   ,CAST(CUSTODY_MARKET_AMT AS DECIMAL(18,3)) AS FX_PV
+   ,CAST(CUSTODY_MARKET_AMT AS DECIMAL(18,3)) AS NTD_PV
+   ,TRIM(CAST( 'DBU'  AS CHAR(3) ) )          AS PLAT 
+   ,'1' TRUST_F 
+   ,'0' PLEDGE_F 
+   ,REPORT_DATE                               AS DATA_DATE
+
+FROM  ACCT_BND_STOCK_DETAIL?YYYYMM    A  --信託保管帳戶的"台股"餘額檔
+WHERE A.CUSTODY_UNITS<>0
+------- 此TABLE 為限定客戶轉出的TABLE，若有新客戶時要開電聯單請資訊處新增  2018.10.03
+;
+
+
+/*STEP 06.INSERT 客戶保銀債券餘額*/
+INSERT INTO  PB_TEMP.TW_AUM_TEMP ------ 信託保管客戶，未設質的台股餘額  2018.10.03
+(CUSTOMER_ID, ACCT_NBR, TXN_DATE, PROD_TP_L, PROD_TP_M , PROD_TP_S , CUR_PROD , CUR_TXN , PROD_ID    , PROD_NAME , ISIN_CODE , PRICE , UNITS  
+, PROD_CUR_RATE    , TXN_CUR_RATE , FX_AMT , NTD_AMT , FX_PV , NTD_PV , PLAT,  TRUST_F, PLEDGE_F, DATA_DATE)
+
+SEL 
+B.CUSTOMER_ID 
+,B.ACCT_NBR
+,B.TRAN_DATE ----沒有紀錄交易日期，暫使用資料日期
+,'債券' PROD_TP_L, '保管銀行' PROD_TP_M, ''PROD_TP_S 
+,B.CURRENCY_CODE         CUR_PROD
+,B.TRAN_CURRENCY_CODE      CUR_TXN 
+,B.PRODUCT_CODE             PROD_ID
+,B.PRODUCT_NAME           PROD_NAME 
+,B.ISIN_CODE             ISIN_CODE
+,B.NET_ASSET_VALUE       PRICE
+,B.UNITS_NUM               UNITS
+,PR.TFR_RATE              PROD_CUR_RATE     
+,TR.TFR_RATE              TXN_CUR_RATE  
+,B.INVEST_COSTS_AMT      FX_AMT  
+,CAST(B.INVEST_COSTS_AMT  * CAST(TR.TFR_RATE AS DECIMAL(8,6)) AS DECIMAL(18,3)) NTD_AMT  
+,B.SETTLE_AMT              FX_PV  
+,CAST(B.SETTLE_AMT     * CAST(PR.TFR_RATE AS DECIMAL(8,6)) AS DECIMAL(18,3)) NTD_PV
+,'保銀' PLAT 
+,'0' TRUST_F 
+,CASE WHEN TRIM(B.PLEDGE_IND) NOT IN 'N' THEN '1' ELSE '0' END PLEDGE_F 
+,B.SNAPSHOT_DATE DATA_DATE
+
+FROM ACCT_CUS_BOND_BAL?YYYYMM B
+------------------------------------------------------------------------------------------------------------------------------------
+    LEFT JOIN ( SEL * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE ='TWD' ) PR ON B.CURRENCY_CODE =PR.CURRENCY_CODE
+    ------------------------------------------------------------------------------------------------------------------------------------
+    LEFT JOIN ( SEL * FROM RD_EXC_RATE_REV?YYYYMM WHERE TFR_CURRENCY_CODE ='TWD' ) TR ON B.TRAN_CURRENCY_CODE =TR.CURRENCY_CODE
+    ------------------------------------------------------------------------------------------------------------------------------------
+
+WHERE CUSTOMER_ID IN (SEL DISTINCT CUSTOMER_ID FROM PB_TEMP.CUS_BASE WHERE ACCT_F ='1')
+;
